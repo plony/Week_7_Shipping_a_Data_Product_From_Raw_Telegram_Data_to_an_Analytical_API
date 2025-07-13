@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: raw_data
+    database: {{ env_var('POSTGRES_DB') }}
+    schema: public # Assuming raw_telegram_messages is loaded into public schema
+    tables:
+      - name: raw_telegram_messages

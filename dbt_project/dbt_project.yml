@@ -1,0 +1,26 @@
+name: 'medical_data_warehouse'
+version: '1.0.0'
+config-version: 2
+
+profile: 'medical_data'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"  # directory which will store compiled SQL files
+clean-targets:         # directories to clean when `dbt clean` is run
+  - "target"
+  - "dbt_packages"
+
+models:
+  medical_data_warehouse:
+    staging:
+      +schema: raw # Staging models load into the raw schema
+      +materialized: view # Staging models as views for flexibility
+    marts:
+      +schema: public # Final data mart tables into the public schema
+      +materialized: table # Materialize data mart tables for performance

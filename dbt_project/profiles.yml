@@ -1,0 +1,12 @@
+medical_data:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: ${POSTGRES_HOST} # From docker-compose.yml, 'db' is the service name
+      port: ${POSTGRES_PORT}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+      dbname: ${POSTGRES_DB}
+      schema: public # Default schema for dbt to operate in
+      threads: 1

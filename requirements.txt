@@ -1,0 +1,9 @@
+python-dotenv
+Telethon
+fastapi
+uvicorn
+psycopg2-binary
+SQLAlchemy
+dbt-postgres
+ultralytics
+Pillow
