@@ -2,12 +2,12 @@ version: '3.8'
 
 services:
   db:
-    image: postgres:13
+    image: postgres:13-alpine
     restart: always
     environment:
+      POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -15,20 +15,29 @@ services:
 
   app:
     build: .
-    restart: always
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
+      - ./data/raw/telegram_messages:/app/data/raw/telegram_messages
+      - ./data/raw/telegram_images:/app/data/raw/telegram_images
     depends_on:
       - db
-    volumes:
-      - ./app:/app/app
-      - ./scripts:/app/scripts
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./dbt_project:/app/dbt_project # Mount dbt project for access within container
-    command: bash -c "python scripts/load_to_postgres.py && dbt debug --project-dir /app/dbt_project && dbt seed --project-dir /app/dbt_project && dbt run --project-dir /app/dbt_project && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_PHONE_NUMBER: ${TELEGRAM_PHONE_NUMBER}
+      RAW_DATA_DIR: ${RAW_DATA_DIR}
+      RAW_IMAGES_DIR: ${RAW_IMAGES_DIR}
+      LOG_DIR: ${LOG_DIR}
+    command: python ./scripts/scrape_telegram.py
+    # >>> THESE LINES ARE ADDED/UNCOMMENTED FOR INTERACTIVE AUTHENTICATION <<<
+    stdin_open: true # Keeps stdin open for interactive input
+    tty: true        # Allocates a pseudo-TTY for interactive input
 
 volumes:
   postgres_data:

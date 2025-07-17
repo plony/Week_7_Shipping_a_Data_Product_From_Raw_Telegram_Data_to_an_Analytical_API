@@ -2,117 +2,103 @@ import os
 import json
 import psycopg2
 from dotenv import load_dotenv
-import logging
-from datetime import datetime
 
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(filename='logs/scraper.log', level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+# --- Configuration from .env ---
+POSTGRES_DB = os.getenv('POSTGRES_DB')
+POSTGRES_USER = os.getenv('POSTGRES_USER')
+POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD')
+POSTGRES_HOST = os.getenv('POSTGRES_HOST')
+POSTGRES_PORT = os.getenv('POSTGRES_PORT')
+RAW_DATA_DIR = os.getenv('RAW_DATA_DIR', 'data/raw/telegram_messages') # Default if not set
 
-PG_USER = os.getenv('POSTGRES_USER')
-PG_PASSWORD = os.getenv('POSTGRES_PASSWORD')
-PG_DB = os.getenv('POSTGRES_DB')
-PG_HOST = os.getenv('POSTGRES_HOST')
-PG_PORT = os.getenv('POSTGRES_PORT')
-RAW_DATA_PATH = 'data/raw/telegram_messages'
+# Ensure the raw data directory exists
+if not os.path.exists(RAW_DATA_DIR):
+    print(f"Error: Raw data directory '{RAW_DATA_DIR}' not found. Please ensure your Telegram JSON files are here.")
+    exit(1)
 
-def create_raw_table(cur):
-    """Creates the raw_telegram_messages table if it doesn't exist."""
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS raw_telegram_messages (
-            id BIGINT PRIMARY KEY,
-            sender_id BIGINT,
-            date TIMESTAMP,
-            message TEXT,
-            views INTEGER,
-            forwards INTEGER,
-            replies_count INTEGER,
-            has_media BOOLEAN,
-            media_type VARCHAR(50),
-            media_path TEXT,
-            entities JSONB,
-            channel_name TEXT,
-            scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+def create_raw_table(cursor):
+    """Creates the raw schema and telegram_messages table if they don't exist."""
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS raw;")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS raw.telegram_messages (
+            id SERIAL PRIMARY KEY,
+            message_json JSONB NOT NULL,
+            loaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
     """)
-    logging.info("Ensured raw_telegram_messages table exists.")
+    print("Ensured raw.telegram_messages table exists.")
 
-def insert_raw_data(cur, data, channel_name):
-    """Inserts a single message's data into the raw_telegram_messages table."""
+def load_json_to_db(file_path, cursor):
+    """Loads a single JSON file into the raw.telegram_messages table."""
     try:
-        cur.execute("""
-            INSERT INTO raw_telegram_messages (
-                id, sender_id, date, message, views, forwards, replies_count,
-                has_media, media_type, media_path, entities, channel_name
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                sender_id = EXCLUDED.sender_id,
-                date = EXCLUDED.date,
-                message = EXCLUDED.message,
-                views = EXCLUDED.views,
-                forwards = EXCLUDED.forwards,
-                replies_count = EXCLUDED.replies_count,
-                has_media = EXCLUDED.has_media,
-                media_type = EXCLUDED.media_type,
-                media_path = EXCLUDED.media_path,
-                entities = EXCLUDED.entities,
-                channel_name = EXCLUDED.channel_name,
-                scraped_at = CURRENT_TIMESTAMP;
-        """, (
-            data['id'], data['sender_id'], data['date'], data['message'],
-            data['views'], data['forwards'], data['replies_count'],
-            data['has_media'], data['media_type'], data['media_path'],
-            json.dumps(data['entities']), channel_name
-        ))
-        logging.debug(f"Inserted/Updated message ID {data['id']} for channel {channel_name}")
-    except Exception as e:
-        logging.error(f"Error inserting data for message ID {data['id']} from channel {channel_name}: {e}")
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
-def load_data_to_postgres():
-    """Loads raw JSON data from the data lake into PostgreSQL."""
+        if not isinstance(data, list):
+            data = [data] # Ensure data is a list of messages
+
+        for message in data:
+            # Check if message with this 'id' already exists to prevent duplicates
+            message_id = message.get('id')
+            if message_id is None:
+                print(f"Warning: Skipping message in {file_path} due to missing 'id'.")
+                continue
+
+            # Check for existing message by its original Telegram ID (if available and reliable)
+            # For simplicity, if we are loading entire files, we might just insert,
+            # but for de-duplication, checking the original message ID is better.
+            # Assuming 'id' in JSON is a unique identifier from Telegram.
+            cursor.execute(
+                "SELECT id FROM raw.telegram_messages WHERE (message_json->>'id')::BIGINT = %s;",
+                (message_id,)
+            )
+            if cursor.fetchone():
+                print(f"Message with original ID {message_id} from {file_path} already exists. Skipping.")
+                continue
+
+            cursor.execute(
+                "INSERT INTO raw.telegram_messages (message_json) VALUES (%s);",
+                (json.dumps(message),) # psycogp2 expects string for JSONB
+            )
+            print(f"Loaded message {message_id} from {file_path}")
+
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON from {file_path}: {e}")
+    except Exception as e:
+        print(f"Error loading {file_path}: {e}")
+
+def main():
     conn = None
     try:
         conn = psycopg2.connect(
-            dbname=PG_DB,
-            user=PG_USER,
-            password=PG_PASSWORD,
-            host=PG_HOST,
-            port=PG_PORT
+            dbname=POSTGRES_DB,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD,
+            host=POSTGRES_HOST,
+            port=POSTGRES_PORT
         )
-        cur = conn.cursor()
-        create_raw_table(cur)
+        conn.autocommit = True # Auto-commit each transaction for simplicity in loading
 
-        for date_dir in os.listdir(RAW_DATA_PATH):
-            date_path = os.path.join(RAW_DATA_PATH, date_dir)
-            if os.path.isdir(date_path):
-                for channel_dir in os.listdir(date_path):
-                    channel_path = os.path.join(date_path, channel_dir)
-                    if os.path.isdir(channel_path):
-                        channel_name = channel_dir
-                        for filename in os.listdir(channel_path):
-                            if filename.endswith('.json') and filename.startswith('message_'):
-                                filepath = os.path.join(channel_path, filename)
-                                try:
-                                    with open(filepath, 'r', encoding='utf-8') as f:
-                                        message_data = json.load(f)
-                                    insert_raw_data(cur, message_data, channel_name)
-                                except json.JSONDecodeError as e:
-                                    logging.error(f"Error decoding JSON from {filepath}: {e}")
-                                except Exception as e:
-                                    logging.error(f"Error processing file {filepath}: {e}")
-        conn.commit()
-        logging.info("Successfully loaded all raw data to PostgreSQL.")
+        with conn.cursor() as cursor:
+            create_raw_table(cursor)
 
-    except psycopg2.Error as e:
-        logging.critical(f"Database connection or operation error: {e}")
+            for root, _, files in os.walk(RAW_DATA_DIR):
+                for file_name in files:
+                    if file_name.endswith('.json'):
+                        file_path = os.path.join(root, file_name)
+                        print(f"Processing file: {file_path}")
+                        load_json_to_db(file_path, cursor)
+        print("Finished loading raw JSON data.")
+
     except Exception as e:
-        logging.critical(f"An unexpected error occurred during data loading: {e}")
+        print(f"Database connection or operation error: {e}")
     finally:
         if conn:
             conn.close()
+            print("Database connection closed.")
 
 if __name__ == "__main__":
-    load_data_to_postgres()
+    main()
